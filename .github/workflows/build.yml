@@ -1,0 +1,68 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: test + assemble
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # AGP 8.13.2 targets JDK 17; the project still compiles to Java 8 bytecode.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # local.properties is gitignored; the SDK is located via ANDROID_HOME.
+      # The action's default packages include "tools", which Google no longer serves.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      # A duplicated class name makes --tests filters ambiguous.
+      # Convention: *Bench for hardware checks, *Tuner for finding constants, *Test only in src/test.
+      - name: Check for class-name collisions between src/main and src/test
+        run: |
+          collisions=$(comm -12 \
+            <(find TeamCode/src/main -name '*.java' -exec basename {} .java \; | sort -u) \
+            <(find TeamCode/src/test -name '*.java' -exec basename {} .java \; | sort -u))
+          if [ -n "$collisions" ]; then
+            echo "$collisions"
+            echo "::error::Class names above exist in both src/main and src/test. Rename the src/main one to *Bench or *Tuner."
+            exit 1
+          fi
+
+      - name: Unit tests
+        run: ./gradlew :TeamCode:test
+
+      - name: Assemble debug APK
+        run: ./gradlew :TeamCode:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: TeamCode-debug
+          path: TeamCode/build/outputs/apk/debug/TeamCode-debug.apk
+          if-no-files-found: error
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: TeamCode/build/reports/tests/
